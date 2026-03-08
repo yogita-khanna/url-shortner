@@ -1,7 +1,10 @@
 const { Snowflake } = require("@theinternetfolks/snowflake");
 
-const snowflake = new Snowflake();
-
+/**
+ * Generates a globally unique, distributed ID.
+ * we use the static 'generate()' method from the library.
+ * No need to create a 'new Snowflake()' instance.
+ */
 exports.generateID = () => {
-  return snowflake.nextId();
+  return Snowflake.generate();
 };

@@ -1,107 +1,107 @@
-# 🌍 FAANG-Scale URL Shortener Service
+# 🌍 Scalable URL Shortener - System Design Masterclass
 
-Welcome to the **System Design Masterclass** via code. This project is not just a URL shortener; it is an exploration into building **highly available, horizontally scalable, and low-latency systems**.
+This project is a hands-on implementation of a **highly available, horizontally scalable, and low-latency** URL Shortener Service. It follows core distributed systems patterns to handle massive traffic spikes.
 
 ---
 
 ## 🏗️ High-Level Architecture (The Big Picture)
 
-At FAANG scale, we shift from "how to build a feature" to "how to handle 100M+ users".
+To handle 100M+ users, the system is designed to be **decoupled** and **event-driven**.
 
 ```mermaid
 graph TD
-    Client[📱 Client / Browser]
-    CDN[⚡ Edge CDN]
-    LB[⚖️ Global Load Balancer]
-    API[💻 API Servers - Node.js]
-    Redis[🚀 L1 Cache - Redis]
+    Client[📱 User Browser]
+    CDN[⚡ Edge CDN - Cloudflare/Fastly]
+    LB[⚖️ Load Balancer - Nginx/AWS ALB]
+    API[💻 Node.js API Cluster]
+    Redis_Cache[🚀 L1 Cache Cluster - Redis]
+    Redis_Queue[📦 Redis List - Message Broker]
     DB[🗄️ L2 Database - MongoDB Sharded]
-    Kafka[📦 Event Bus - Kafka]
-    Analytix[📊 Analytics Workers]
+    Worker[🛠️ Analytics Worker Service]
     
     Client --> CDN
     CDN --> LB
     LB --> API
-    API <--> Redis
+    API <--> Redis_Cache
+    API -- LPUSH --> Redis_Queue
     API <--> DB
-    API --> Kafka
-    Kafka --> Analytix
+    Redis_Queue -- BRPOP --> Worker
 ```
 
 ---
 
-## ⚡ Core Design Patterns Implemented
+## ⚡ Core Scaling Strategies Implemented
 
-### 1. Distributed ID Generation (Snowflake Pattern)
-Traditional DB Auto-Increments fail at scale because they create a single point of failure and bottleneck.
-- **Solution**: We use **Snowflake IDs** (64-bit integers).
-- **Structure**: `| Timestamp | Machine ID | Sequence |`
-- **Result**: Unique, collision-free IDs across multiple server regions without talking to a central database.
+### 1. Distributed ID Generation (The Snowflake Problem)
+Traditional DB auto-incrementing IDs create a central bottleneck.
+- **Solution**: **Snowflake IDs**.
+- **Logic**: Each server generates its own unique 64-bit ID using machine ID + timestamp + sequence.
+- **Benefit**: Zero coordination needed between servers.
 
-### 2. URL Encoding (Base62)
-To convert a massive numeric ID (like `81273912312`) into a tiny short URL code (like `aZx91K`).
-- **Base62**: Uses `0-9`, `a-z`, `A-Z`.
-- **Reason**: URL friendly characters that minimize code length while maximizing capacity.
+### 2. Solving the "Hot Key" Problem (CDN Caching)
+*Scenario*: A viral link gets 1M clicks/sec. Even Redis might struggle.
+- **Solution**: **Edge Redirect**. 
+- **Implementation**: We send `Cache-Control: public, max-age=300` headers.
+- **Result**: The first request hits our API, but subsequent hits for the next 5 mins are handled by the CDN (Cloudflare/Fastly) directly, never touching our servers.
 
-### 3. Multi-Layer Caching (L1/L2)
-Redirects must be under **50ms**.
-- **L1 (Redis)**: Stores the `shortCode -> longURL` mapping with an expiry. Hits are ultrafast.
-- **L2 (MongoDB)**: The source of truth. Handles misses and populates the cache.
+### 3. Async Analytics (Redis Message Broker Pattern)
+*Scenario*: We want to track click analytics (IP, device, time) without slowing down the user redirect.
+- **Implementation**: **Redis List as a Queue**.
+- **Producer**: The API server uses `LPUSH` to dump click metadata into a Redis list called `analytics_queue`.
+- **Broker**: Redis holds this data persistently in memory. 
+- **Consumer**: A separate **Worker Process** uses `BRPOP` (Blocking Right Pop) to listen for new events and process them in the background.
 
-### 4. Service Layer Pattern
-Separating business logic from HTTP requests ensures the system is easy to test and maintain.
-
----
-
-## 📈 Capacity Estimation (The Interviewer's Favorite)
-
-Assume you are at **FAANG scale**:
-- **Writes/day**: 10 million (New short links)
-- **Reads/day**: 500 million (Redirections)
-- **Storage**: ~300 bytes per record (URL + Metadata)
-- **Calculation**: 
-  - 10M * 300 bytes = **3GB per day**
-  - **~1TB per year**
-- **Strategy**: Horizontal Sharding by `shortCode` or `machine_id` is required to manage this growth.
+### 4. Rate Limiting (Resource Protection)
+*Scenario*: A malicious bot tries to create millions of URLs in seconds to fill up your database.
+- **Solution**: **Redis-backed Rate Limiter**.
+- **Logic**: Uses a **Fixed Window Counter** pattern. It tracks the number of requests per IP in Redis.
+- **Implementation**: Currently set to **5 requests per minute** for the `/shorten` endpoint (for local testing).
 
 ---
 
-## 🔥 Solving Advanced Scaling Problems
+## 🏗️ Horizontal Scaling Concepts
 
-### 1. The "Hot Key" Problem
-*Scenario*: A tweet with your short link goes viral (millions/sec). A single Redis node hosting that key will crash.
-- **Solution**: **CDN Caching**. Redirect at the edge (Cloudflare/Fastly) before the request even hits your server.
+### Load Balancing & Statelessness
+Our API servers are **stateless**. This means they don't store "session" info. Any user can hit any of our 100 API servers and get the same result. A **Load Balancer** (like Nginx) sits in front to distribute traffic.
 
-### 2. Cache Stampede (Dog-piling)
-*Scenario*: Cache for a popular link expires. 10,000 requests hit the database simultaneously.
-- **Solution**: **Request Coalescing** or **Distributed Locking**. We ensure only one "worker" fetches from the DB while others wait.
+### Database Sharding (L2 Storage)
+If one MongoDB instance fills up, we **Shard** the data based on the `shortCode`.
+- **Shard A**: Links starting with `0-Z`
+- **Shard B**: Links starting with `a-z`
+This allows us to scale storage infinitely by adding more DB nodes.
 
-### 3. Analytics Pipeline (Event-Driven)
-Do NOT increment hit counts inside the redirect request. It slows down the user.
-- **Solution**: Push "Click Events" to **Kafka/Redpanda**. Background workers process this asynchronously to update dashboards.
+---
+
+## 📂 Project Structure (LLD)
+
+| Component | Responsibility | Analogous To... |
+| :--- | :--- | :--- |
+| **Routes** | Defines the API endpoints. | The Map |
+| **Controllers** | Handles HTTP headers, status codes, and input validation. | The Receptionist |
+| **Services** | Core logic: ID generation, Caching checks, and Queue pushing. | The Brain/Manager |
+| **Middlewares** | Security and protection layers (e.g., **Rate Limiter**). | The Security Guard |
+| **Workers** | Background tasks (Processing analytics events from Redis). | The Cleaning Crew |
+| **Utils** | Base62 encoding (Hinglish comments included) and ID generation. | The Toolbox |
 
 ---
 
 ## 🚀 How to Run Locally
 
-1. **Prerequisites**: [MongoDB](https://www.mongodb.com/try/download/community) and [Redis](https://redis.io/download/).
-2. **Install Dependencies**:
-   ```bash
-   npm install
-   ```
-3. **Configure Environment**: Update `.env` with your Mongo/Redis URIs.
-4. **Launch Dev Server**:
-   ```bash
-   npm run dev
-   ```
+1.  **Start Infrastructure**: `docker-compose up -d`.
+2.  **Start the API Server**: `npm run dev`.
+3.  **Start the Analytics Worker**: `npm run worker`.
+
+### 🧪 Practical Verification
+1.  **Rate Limit Test**: Try to shorten a URL more than 5 times in 1 minute. You will get a `429 Too Many Requests` error.
+2.  **Redirect Test**: Access a short URL. Your browser redirects instantly.
 
 ---
 
-## 🛡️ Roadmap to "Distinguished Engineer"
+### 📝 Notebook Study Points
+- Draw the flow of a single click from the **User** to the **Worker**.
+- Why is `BRPOP` better than a `while(true)` loop with a delay? (Hint: Efficient CPU usage).
+- Explain how `LPUSH` ensures no data is lost even if the API server crashes after pushing.
 
-- [ ] **Rate Limiting**: Implementation using Token Bucket algorithm in Redis.
-- [ ] **Custom Aliases**: Allow users to pick `url.com/xyz`.
-- [ ] **TTL/Expiry**: Automatic cleanup of old links using MongoDB TTL indexes.
-- [ ] **Micro-Service Migration**: Move ID generator to a standalone gRPC service.
+---
 
-Designed with ❤️ for High-Scale Engineering.
+Designed for **High-Performance Architecture Training**.
