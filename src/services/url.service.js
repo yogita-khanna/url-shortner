@@ -3,6 +3,7 @@ const { encode } = require("../utils/base62");
 const { generateID } = require("../utils/idGenerator");
 const redis = require("../config/redis");
 const { sendClickEvent } = require("../utils/analyticsQueue");
+const { getShardId } = require("../utils/shardRouter");
 
 /**
  * Service to handle URL shortening logic.
@@ -23,6 +24,11 @@ exports.createShortURL = async (longUrl, customAlias = null) => {
     shortCode = encode(id);
   }
 
+  // Identify the Shard (Consistent Hashing)
+  const shardId = getShardId(shortCode);
+  console.log(`[Sharding] Logic: ${shortCode} will be stored in Shard: ${shardId}`);
+
+  // Persist to MongoDB (In real life, this would use ShardDB_${shardId} connection)
   await URL.create({ shortCode, longUrl });
   await redis.set(shortCode, longUrl, {
     EX: 3600 * 24 // 24 hours cache TTL
@@ -42,7 +48,11 @@ exports.resolveURL = async (shortCode, metadata = {}) => {
     console.log(`[Service] Cache Hit for: ${shortCode}`);
     longUrl = cached;
   } else {
-    console.log(`[Service] Cache Miss for: ${shortCode}, fetching from DB...`);
+    // Cache Miss - Need to find which Shard has this URL
+    const shardId = getShardId(shortCode);
+    console.log(`[Sharding] Cache Miss! Querying Shard: ${shardId} for code: ${shortCode}`);
+    
+    // In real life (we are using only one DB for now): urlEntry = await ShardDB[shardId].findOne({ shortCode });
     const urlEntry = await URL.findOne({ shortCode });
     
     if (urlEntry) {

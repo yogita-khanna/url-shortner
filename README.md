@@ -51,7 +51,12 @@ Traditional DB auto-incrementing IDs create a central bottleneck.
 - **Broker**: Redis holds this data persistently in memory. 
 - **Consumer**: A separate **Worker Process** uses `BRPOP` (Blocking Right Pop) to listen for new events and process them in the background.
 
-### 4. Rate Limiting (Resource Protection)
+### 4. Storage Optimization & Sharding
+*Scenario*: 100 Billion URLs cannot fit on one machine's disk or memory.
+- **TTL Index (Link Expiration)**: We implemented a **TTL Index** on `createdAt`. Links automatically delete themselves after 365 days to free up space.
+- **Logical Sharding Logic**: Implemented `src/utils/shardRouter.js`. This logic uses a hash of the `shortCode` to determine which DB node (Shard) should handle the request. This allows us to scale storage infinitely by adding more DB machines.
+
+### 5. Rate Limiting (Resource Protection)
 *Scenario*: A malicious bot tries to create millions of URLs in seconds to fill up your database.
 - **Solution**: **Redis-backed Rate Limiter**.
 - **Logic**: Uses a **Fixed Window Counter** pattern. It tracks the number of requests per IP in Redis.
@@ -81,7 +86,7 @@ This allows us to scale storage infinitely by adding more DB nodes.
 | **Services** | Core logic: ID generation, Caching checks, and Queue pushing. | The Brain/Manager |
 | **Middlewares** | Security and protection layers (e.g., **Rate Limiter**). | The Security Guard |
 | **Workers** | Background tasks (Processing analytics events from Redis). | The Cleaning Crew |
-| **Utils** | Base62 encoding (Hinglish comments included) and ID generation. | The Toolbox |
+| **Utils/Logic** | Base62 encoding, Snowflake IDs, and **Shard Routing**. | The Toolbox |
 
 ---
 
@@ -92,8 +97,9 @@ This allows us to scale storage infinitely by adding more DB nodes.
 3.  **Start the Analytics Worker**: `npm run worker`.
 
 ### 🧪 Practical Verification
-1.  **Rate Limit Test**: Try to shorten a URL more than 5 times in 1 minute. You will get a `429 Too Many Requests` error.
+1.  **Rate Limit Test**: Try to shorten a URL more than 5 times in 1 minute.
 2.  **Redirect Test**: Access a short URL. Your browser redirects instantly.
+3.  **TTL Verification**: Check MongoDB `URL` collection; it now has a `createdAt` index with an `expireAfterSeconds` set.
 
 ---
 
@@ -101,6 +107,7 @@ This allows us to scale storage infinitely by adding more DB nodes.
 - Draw the flow of a single click from the **User** to the **Worker**.
 - Why is `BRPOP` better than a `while(true)` loop with a delay? (Hint: Efficient CPU usage).
 - Explain how `LPUSH` ensures no data is lost even if the API server crashes after pushing.
+- **Sharding Question**: Why do we hash the `shortCode` for sharding instead of using the `longUrl`?
 
 ---
 
